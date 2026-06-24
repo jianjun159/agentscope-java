@@ -10660,7 +10660,7 @@ SandboxContext callCtx = SandboxContext.builder()
 
 RuntimeContext ctx = RuntimeContext.builder()
     .sessionId("my-session")
-    .sandboxContext(callCtx)      // overrides the defaultSandboxContext from build time
+    .put(SandboxContext.class, callCtx)      // overrides the defaultSandboxContext from build time
     .build();
 
 agent.call(msgs, ctx).block();
@@ -10692,7 +10692,7 @@ SandboxContext callCtx = SandboxContext.builder()
     .build();
 
 RuntimeContext ctx = RuntimeContext.builder()
-    .sandboxContext(callCtx)
+    .put(SandboxContext.class, callCtx)
     .build();
 
 agent.call(msgs, ctx).block();
@@ -10705,11 +10705,11 @@ agent.call(msgs, ctx).block();
 Sandbox sharedSandbox = ...;  // already start()ed
 
 agent1.call(msgs1, RuntimeContext.builder()
-    .sandboxContext(SandboxContext.builder().externalSandbox(sharedSandbox).client(client).build())
+    .put(SandboxContext.class, SandboxContext.builder().externalSandbox(sharedSandbox).client(client).build())
     .build()).block();
 
 agent2.call(msgs2, RuntimeContext.builder()
-    .sandboxContext(SandboxContext.builder().externalSandbox(sharedSandbox).client(client).build())
+    .put(SandboxContext.class, SandboxContext.builder().externalSandbox(sharedSandbox).client(client).build())
     .build()).block();
 
 // Manually shutdown after all agents are done
@@ -11460,7 +11460,7 @@ agent.streamEvents(new UserMessage("Summarize today in three bullets."))
                 System.out.print(((TextBlockDeltaEvent) event).getDelta());
             } else if (event.getType() == AgentEventType.TOOL_CALL_START) {
                 // The agent is about to call a tool — surface the call info
-                System.out.println("\n[tool] " + ((ToolCallStartEvent) event).getToolName());
+                System.out.println("\n[tool] " + ((ToolCallStartEvent) event).getToolCallName());
             }
             // Other events: thinking blocks, tool results, reply end, etc.
         })
@@ -11769,7 +11769,7 @@ agent.streamEvents(new UserMessage("Summarize the README."))
                 System.out.print(((TextBlockDeltaEvent) event).getDelta());
             } else if (event.getType() == AgentEventType.TOOL_CALL_START) {
                 // The agent is about to call a tool — surface the call info
-                System.out.println("\n[tool] " + ((ToolCallStartEvent) event).getToolName());
+                System.out.println("\n[tool] " + ((ToolCallStartEvent) event).getToolCallName());
             }
             // Other events: thinking blocks, tool results, reply end, etc.
         })
@@ -11828,7 +11828,7 @@ Msg result = agent.call(List.of(new UserMessage("Hi.")), ctx).block();
 ### Who reads it
 
 - **Tools** (`@Tool` methods and `ToolBase.callAsync`) — see [Tool — Receiving context](./tool.md#receiving-context).
-- **Middleware** (every `MiddlewareBase` hook) — call `agent.getRuntimeContext()`. See [Middleware — Reading RuntimeContext](./middleware.md#reading-runtimecontext).
+- **Middleware** (every `MiddlewareBase` hook) — received as the second parameter `ctx`. See [Middleware — Reading RuntimeContext](./middleware.md#reading-runtimecontext).
 - **All threads within the same call** — the internal maps are `ConcurrentMap`s, so hooks and tools can read/write the same instance to coordinate.
 
 ### Relation to persistence
@@ -12657,6 +12657,7 @@ Each onion hook receives a `next` function — calling `next.apply(input)` enter
 
 ```java
 import io.agentscope.core.agent.Agent;
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.middleware.ActingInput;
 import io.agentscope.core.middleware.AgentInput;
@@ -12672,7 +12673,7 @@ public class FullObservabilityMiddleware implements MiddlewareBase {
 
     @Override
     public Flux<AgentEvent> onAgent(
-            Agent agent, AgentInput input, Function<AgentInput, Flux<AgentEvent>> next) {
+            Agent agent, RuntimeContext ctx, AgentInput input, Function<AgentInput, Flux<AgentEvent>> next) {
         System.out.println("[agent] start for " + agent.getName());
         return next.apply(input)
                 .doOnComplete(() -> System.out.println("[agent] end for " + agent.getName()));
@@ -12680,20 +12681,20 @@ public class FullObservabilityMiddleware implements MiddlewareBase {
 
     @Override
     public Flux<AgentEvent> onReasoning(
-            Agent agent, ReasoningInput input, Function<ReasoningInput, Flux<AgentEvent>> next) {
+            Agent agent, RuntimeContext ctx, ReasoningInput input, Function<ReasoningInput, Flux<AgentEvent>> next) {
         System.out.println("[reasoning] start");
         return next.apply(input).doOnComplete(() -> System.out.println("[reasoning] end"));
     }
 
     @Override
     public Flux<AgentEvent> onModelCall(
-            Agent agent, ModelCallInput input, Function<ModelCallInput, Flux<AgentEvent>> next) {
+            Agent agent, RuntimeContext ctx, ModelCallInput input, Function<ModelCallInput, Flux<AgentEvent>> next) {
         System.out.println("[model_call] " + input.model().getClass().getSimpleName());
         return next.apply(input).doOnComplete(() -> System.out.println("[model_call] done"));
     }
 
     @Override
-    public Mono<String> onSystemPrompt(Agent agent, String currentPrompt) {
+    public Mono<String> onSystemPrompt(Agent agent, RuntimeContext ctx, String currentPrompt) {
         System.out.println("[system_prompt] length=" + currentPrompt.length());
         return Mono.just(currentPrompt);
     }
@@ -12716,7 +12717,7 @@ Runnable examples: `agentscope-examples/documentation/.../middleware/CustomizedM
 
 ### Reading RuntimeContext
 
-Every `MiddlewareBase` hook receives the `Agent` as the first argument. Calling `agent.getRuntimeContext()` returns the [`RuntimeContext`](./agent.md#runtimecontext-per-call-context) bound for this `call` / `stream` — you can read session fields and typed/string attributes, and you can write back to it to forward values to downstream hooks and tools.
+Every `MiddlewareBase` hook receives the [`RuntimeContext`](./agent.md#runtimecontext-per-call-context) bound for this `call` / `stream` as the second argument — you can read session fields and typed/string attributes, and you can write back to it to forward values to downstream hooks and tools.
 
 ```java
 import io.agentscope.core.agent.Agent;
@@ -12732,16 +12733,13 @@ public class RequestContextMiddleware implements MiddlewareBase {
 
     @Override
     public Flux<AgentEvent> onAgent(
-            Agent agent, AgentInput input, Function<AgentInput, Flux<AgentEvent>> next) {
-        RuntimeContext rc = agent.getRuntimeContext();
-        if (rc != null) {
-            System.out.printf(
-                    "[req] user=%s session=%s reqId=%s%n",
-                    rc.getUserId(),
-                    rc.getSessionId(),
-                    rc.get("request_id"));
-            rc.put("trace_id", java.util.UUID.randomUUID().toString());  // visible to later hooks / tools
-        }
+            Agent agent, RuntimeContext ctx, AgentInput input, Function<AgentInput, Flux<AgentEvent>> next) {
+        System.out.printf(
+                "[req] user=%s session=%s reqId=%s%n",
+                ctx.getUserId(),
+                ctx.getSessionId(),
+                ctx.get("request_id"));
+        ctx.put("trace_id", java.util.UUID.randomUUID().toString());  // visible to later hooks / tools
         return next.apply(input);
     }
 }
@@ -12749,7 +12747,6 @@ public class RequestContextMiddleware implements MiddlewareBase {
 
 Things to keep in mind:
 
-- `agent.getRuntimeContext()` is only non-null during a `call`; outside a call it returns `null`.
 - The same `RuntimeContext` instance is shared by every hook and tool in the reply; its maps are thread-safe, so `put` from any hook is safe.
 - Don't cache per-request state on middleware instance fields — a middleware instance is typically reused across agents / calls. Use `RuntimeContext` or Reactor's `contextWrite` instead.
 - If the builder also has a global `toolExecutionContext`, the framework merges it after the per-call context when dispatching to tools (per-call wins on key collisions).
@@ -14359,13 +14356,14 @@ HarnessAgent agent = HarnessAgent.builder()
     .build();
 
 // Production multi-replica — use DistributedStore
-RedisClient client = RedisClient.create("redis://redis.prod:6379");
+JedisPooled jedis = new JedisPooled("redis://redis.prod:6379");
 HarnessAgent agent = HarnessAgent.builder()
-    .name("MyAgent")
-    .model(model)
-    .workspace(workspace)
-    .distributedStore(RedisDistributedStore.fromJedis(jedis))
-    .build();
+        .name("MyAgent")
+        .model(model)
+        .workspace(workspace)
+        .stateStore(new RedisAgentStateStore(jedis))
+        .distributedStore(RedisDistributedStore.fromJedis(jedis))
+        .build();
 ```
 
 :::{warning}
@@ -16185,7 +16183,7 @@ SandboxContext callCtx = SandboxContext.builder()
 
 agent.call(msgs, RuntimeContext.builder()
     .sessionId("my-session")
-    .sandboxContext(callCtx)
+    .put(SandboxContext.class, callCtx)
     .build()).block();
 
 // shut it down yourself when done
@@ -16600,7 +16598,7 @@ parent.streamEvents(new UserMessage(message), ctx)
         if (event.getType() == AgentEventType.TEXT_BLOCK_DELTA) {
             System.out.print(prefix + ((TextBlockDeltaEvent) event).getDelta());
         } else if (event.getType() == AgentEventType.TOOL_CALL_START) {
-            System.out.println(prefix + "[tool] " + ((ToolCallStartEvent) event).getToolName());
+            System.out.println(prefix + "[tool] " + ((ToolCallStartEvent) event).getToolCallName());
         } else if (event.getType() == AgentEventType.AGENT_START) {
             if (src != null) System.out.println("── child started: " + src);
         } else if (event.getType() == AgentEventType.AGENT_END) {
@@ -16641,7 +16639,7 @@ public Flux<ServerSentEvent<String>> chat(@RequestParam String message,
                 if (event instanceof TextBlockDeltaEvent delta) {
                     payload.put("delta", delta.getDelta());
                 } else if (event instanceof ToolCallStartEvent start) {
-                    payload.put("toolName", start.getToolName());
+                    payload.put("toolName", start.getToolCallName());
                 }
                 return ServerSentEvent.<String>builder()
                         .data(objectMapper.writeValueAsString(payload))
@@ -17078,6 +17076,8 @@ A common point of confusion: **reading** a skill (`load_skill_through_path` fetc
 
 **Keep `SKILL.md` lean.** Aim for ≤ 2k tokens; put reference material under `references/`, scripts under `scripts/`. The agent reads them on demand.
 
+**Use relative paths in SKILL.md and scripts.** Due to the multi-layer isolation of the abstract filesystem, always reference resources and scripts using paths relative to SKILL.md (e.g. `scripts/run.py`, `references/guide.md`). **Do not** hard-code absolute paths like `/workspace/scripts/run.py`. The framework automatically generates the correct `<files-root>` absolute path prefix for each skill based on the active filesystem mode, and the agent uses `<files-root>` to construct full paths at shell-execution time. Hard-coded absolute paths make a skill work only under a specific filesystem mode.
+
 **General capability in marketplaces, project-specific in the workspace.** Code review, table analysis → team Git for shared maintenance. Internal RPC conventions, project naming rules → `workspace/skills/` so they version with the code.
 
 **Per-user dirs are for "override + augment", not primary storage.** Keep critical skills visible to every user.
@@ -17286,7 +17286,7 @@ To observe task changes in real time through the event stream, listen for `todo_
 ```java
 agent.streamEvents(message)
     .filter(e -> e.getType() == AgentEventType.TOOL_RESULT_END)
-    .filter(e -> "todo_write".equals(((ToolResultEndEvent) e).getToolName()))
+    .filter(e -> "todo_write".equals(((ToolResultEndEvent) e).getToolCallName()))
     .doOnNext(e -> {
         // Re-read the latest task list from state
         var tasks = agent.getAgentState(userId, sessionId)
@@ -17860,6 +17860,31 @@ description: "Per-version change records for AgentScope Java"
 ---
 
 This page tracks per-version changes for AgentScope Java 2.0. For the overall migration guide from 1.x, see the [V1 Migration Guide](../change-log.md).
+
+---
+
+## 2.0.0-RC3
+
+> Released: 2026-06-11
+
+### Added
+
+- **`AgentResultEvent`** — new event type emitted when an agent finishes processing, immediately before `AgentEndEvent`, carrying the final `Msg` result. Consumers of `streamEvents()` can obtain the result directly from the event stream without separately subscribing to the `Mono<Msg>` return value
+- **`CustomEvent`** — generic extensible event for middleware to push application-level notifications (state changes, team updates, etc.) to front-end subscribers without adding per-use-case `AgentEventType` entries. Built-in well-known names: `state_updated`, `team_updated`
+- **`HintBlockEvent`** — one-shot hint block event for delivering complete content such as team messages, background tool results, and user interruptions, as opposed to streamed text/thinking blocks
+- **`WorkspacePathNormalizer`** — file path normalization utility that converts absolute paths to workspace-relative form. Registers prefixes based on the active filesystem mode (local / sandbox) to prevent cross-mode prefix collisions
+- **`toolCallName` on tool events** — `ToolCallDeltaEvent`, `ToolCallEndEvent`, `ToolResultDataDeltaEvent`, `ToolResultEndEvent`, and `ToolResultTextDeltaEvent` now carry a `toolCallName` field, so consumers no longer need to cache the name mapping from the start event
+
+### Changed
+
+- **Unified `call()` / `streamEvents()` core** — introduced an internal `buildAgentStream` method as the shared implementation for both `call()` and `streamEvents()`, ensuring the `onAgent` middleware chain fires consistently on all invocation paths. `call()` now extracts the result from `AgentResultEvent` in the event stream; the legacy standalone `agentImpl` logic has been removed
+- **Session state always reloaded from store in distributed deployments** — when an `AgentStateStore` is configured, `activateSlotForContext` now reloads the agent state and permission engine from the store at the start of every call, preventing stale local cache reads when the same sessionId drifts across machines
+- **`ToolResultEvictionMiddleware` timing fix** — moved from `onActing` (where state had not yet been written, making eviction a no-op) to `onReasoning`, ensuring tool results are persisted before eviction runs
+- **Simplified `LocalFilesystem` path resolution** — refactored path resolution logic to reduce redundant code
+
+### Fixed
+
+- Fixed `RuntimeContext` not setting `userId` in tests, causing inaccurate user isolation
 
 ---
 
@@ -21592,7 +21617,7 @@ agent.streamEvents(new UserMessage("帮我把今天的关键点列三条。"))
                 System.out.print(((TextBlockDeltaEvent) event).getDelta());
             } else if (event.getType() == AgentEventType.TOOL_CALL_START) {
                 // 智能体即将调用工具 —— 展示调用信息
-                System.out.println("\n[tool] " + ((ToolCallStartEvent) event).getToolName());
+                System.out.println("\n[tool] " + ((ToolCallStartEvent) event).getToolCallName());
             }
             // 其他事件：思考块、工具结果、回复结束等
         })
@@ -21901,7 +21926,7 @@ agent.streamEvents(new UserMessage("总结一下 README 的内容。"))
                 System.out.print(((TextBlockDeltaEvent) event).getDelta());
             } else if (event.getType() == AgentEventType.TOOL_CALL_START) {
                 // 智能体即将调用工具 —— 展示调用信息
-                System.out.println("\n[tool] " + ((ToolCallStartEvent) event).getToolName());
+                System.out.println("\n[tool] " + ((ToolCallStartEvent) event).getToolCallName());
             }
             // 其他事件：思考块、工具结果、回复结束等
         })
@@ -21960,7 +21985,7 @@ Msg result = agent.call(List.of(new UserMessage("Hi.")), ctx).block();
 ### 谁能读到
 
 - **Tool**（`@Tool` 方法或 `ToolBase.callAsync`）—— 见 [Tool — 接收 Context](./tool.md#接收-context)。
-- **Middleware**（`MiddlewareBase` 所有 hook）—— 通过 `agent.getRuntimeContext()` 取当前实例。详见 [Middleware — 读取 RuntimeContext](./middleware.md#读取-runtimecontext)。
+- **Middleware**（`MiddlewareBase` 所有 hook）—— 作为第二个参数 `ctx` 直接传入。详见 [Middleware — 读取 RuntimeContext](./middleware.md#读取-runtimecontext)。
 - **同一次调用的所有线程**—— `RuntimeContext` 内部使用 `ConcurrentMap`，hook / tool 之间可以读写同一实例做协调。
 
 ### 与持久化的关系
@@ -22789,6 +22814,7 @@ ReActAgent agent =
 
 ```java
 import io.agentscope.core.agent.Agent;
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.middleware.ActingInput;
 import io.agentscope.core.middleware.AgentInput;
@@ -22804,7 +22830,7 @@ public class FullObservabilityMiddleware implements MiddlewareBase {
 
     @Override
     public Flux<AgentEvent> onAgent(
-            Agent agent, AgentInput input, Function<AgentInput, Flux<AgentEvent>> next) {
+            Agent agent, RuntimeContext ctx, AgentInput input, Function<AgentInput, Flux<AgentEvent>> next) {
         System.out.println("[agent] start for " + agent.getName());
         return next.apply(input)
                 .doOnComplete(() -> System.out.println("[agent] end for " + agent.getName()));
@@ -22812,20 +22838,20 @@ public class FullObservabilityMiddleware implements MiddlewareBase {
 
     @Override
     public Flux<AgentEvent> onReasoning(
-            Agent agent, ReasoningInput input, Function<ReasoningInput, Flux<AgentEvent>> next) {
+            Agent agent, RuntimeContext ctx, ReasoningInput input, Function<ReasoningInput, Flux<AgentEvent>> next) {
         System.out.println("[reasoning] start");
         return next.apply(input).doOnComplete(() -> System.out.println("[reasoning] end"));
     }
 
     @Override
     public Flux<AgentEvent> onModelCall(
-            Agent agent, ModelCallInput input, Function<ModelCallInput, Flux<AgentEvent>> next) {
+            Agent agent, RuntimeContext ctx, ModelCallInput input, Function<ModelCallInput, Flux<AgentEvent>> next) {
         System.out.println("[model_call] " + input.model().getClass().getSimpleName());
         return next.apply(input).doOnComplete(() -> System.out.println("[model_call] done"));
     }
 
     @Override
-    public Mono<String> onSystemPrompt(Agent agent, String currentPrompt) {
+    public Mono<String> onSystemPrompt(Agent agent, RuntimeContext ctx, String currentPrompt) {
         System.out.println("[system_prompt] length=" + currentPrompt.length());
         return Mono.just(currentPrompt);
     }
@@ -22848,7 +22874,7 @@ public class FullObservabilityMiddleware implements MiddlewareBase {
 
 ### 读取 RuntimeContext
 
-`MiddlewareBase` 的所有 hook 都把 `Agent` 作为首个参数传进来。通过 `agent.getRuntimeContext()` 可拿到本次 `call` / `stream` 绑定的 [`RuntimeContext`](./agent.md#runtimecontext-per-call-上下文)——既能读会话字段，也能按类型 / 按 key 取属性，还能反向写入来给下游 hook 和 tool 传值。
+`MiddlewareBase` 的所有 hook 都将本次 `call` / `stream` 绑定的 [`RuntimeContext`](./agent.md#runtimecontext-per-call-上下文) 作为第二个参数直接传入——既能读会话字段，也能按类型 / 按 key 取属性，还能反向写入来给下游 hook 和 tool 传值。
 
 ```java
 import io.agentscope.core.agent.Agent;
@@ -22864,16 +22890,13 @@ public class RequestContextMiddleware implements MiddlewareBase {
 
     @Override
     public Flux<AgentEvent> onAgent(
-            Agent agent, AgentInput input, Function<AgentInput, Flux<AgentEvent>> next) {
-        RuntimeContext rc = agent.getRuntimeContext();
-        if (rc != null) {
-            System.out.printf(
-                    "[req] user=%s session=%s reqId=%s%n",
-                    rc.getUserId(),
-                    rc.getSessionId(),
-                    rc.get("request_id"));
-            rc.put("trace_id", java.util.UUID.randomUUID().toString());  // 后续 hook / tool 可读
-        }
+            Agent agent, RuntimeContext ctx, AgentInput input, Function<AgentInput, Flux<AgentEvent>> next) {
+        System.out.printf(
+                "[req] user=%s session=%s reqId=%s%n",
+                ctx.getUserId(),
+                ctx.getSessionId(),
+                ctx.get("request_id"));
+        ctx.put("trace_id", java.util.UUID.randomUUID().toString());  // 后续 hook / tool 可读
         return next.apply(input);
     }
 }
@@ -22881,7 +22904,6 @@ public class RequestContextMiddleware implements MiddlewareBase {
 
 注意点：
 
-- `agent.getRuntimeContext()` 只在 `call` 期间非 null；未运行时调用返回 `null`。
 - 同一份 `RuntimeContext` 在整个 reply 内被各层 hook / tool 共享，使用线程安全的内部 map，可以安全地 `put` 写入。
 - 不要把请求级状态缓存到 middleware 实例字段——一个 middleware 实例通常被多个 agent / call 复用；要么放进 `RuntimeContext`，要么用 Reactor `contextWrite`。
 - 若 builder 上同时配置了全局 `toolExecutionContext`，框架在分发给 tool 时会把它合并到 per-call context 之后（per-call 优先级更高）。
@@ -24491,13 +24513,14 @@ HarnessAgent agent = HarnessAgent.builder()
     .build();
 
 // 多副本生产:使用 DistributedStore
-RedisClient client = RedisClient.create("redis://redis.prod:6379");
+JedisPooled jedis = new JedisPooled("redis://redis.prod:6379");
 HarnessAgent agent = HarnessAgent.builder()
-    .name("MyAgent")
-    .model(model)
-    .workspace(workspace)
-    .distributedStore(RedisDistributedStore.fromJedis(jedis))
-    .build();
+        .name("MyAgent")
+        .model(model)
+        .workspace(workspace)
+        .stateStore(new RedisAgentStateStore(jedis))
+        .distributedStore(RedisDistributedStore.fromJedis(jedis))
+        .build();
 ```
 
 :::{warning}
@@ -26317,7 +26340,7 @@ SandboxContext callCtx = SandboxContext.builder()
 
 agent.call(msgs, RuntimeContext.builder()
     .sessionId("my-session")
-    .sandboxContext(callCtx)
+    .put(SandboxContext.class, callCtx)
     .build()).block();
 
 mySandbox.shutdown();
@@ -26731,7 +26754,7 @@ parent.streamEvents(new UserMessage(message), ctx)
         if (event.getType() == AgentEventType.TEXT_BLOCK_DELTA) {
             System.out.print(prefix + ((TextBlockDeltaEvent) event).getDelta());
         } else if (event.getType() == AgentEventType.TOOL_CALL_START) {
-            System.out.println(prefix + "[tool] " + ((ToolCallStartEvent) event).getToolName());
+            System.out.println(prefix + "[tool] " + ((ToolCallStartEvent) event).getToolCallName());
         } else if (event.getType() == AgentEventType.AGENT_START) {
             if (src != null) System.out.println("── 子 agent 启动: " + src);
         } else if (event.getType() == AgentEventType.AGENT_END) {
@@ -26772,7 +26795,7 @@ public Flux<ServerSentEvent<String>> chat(@RequestParam String message,
                 if (event instanceof TextBlockDeltaEvent delta) {
                     payload.put("delta", delta.getDelta());
                 } else if (event instanceof ToolCallStartEvent start) {
-                    payload.put("toolName", start.getToolName());
+                    payload.put("toolName", start.getToolCallName());
                 }
                 return ServerSentEvent.<String>builder()
                         .data(objectMapper.writeValueAsString(payload))
@@ -27209,6 +27232,8 @@ execute_shell_command("python3 /workspace/skills/code-reviewer/scripts/run-check
 
 **`SKILL.md` 保持精简。** 控制在 2k tokens 上下，详细参考资料放 `references/`，脚本放 `scripts/`。agent 需要时会自己读。
 
+**SKILL.md 和脚本中只使用相对路径。** 由于抽象文件系统多层隔离的特殊性，SKILL.md 中引用资源和脚本时请使用相对于 SKILL.md 的路径（如 `scripts/run.py`、`references/guide.md`），**不要**硬编码绝对路径（如 `/workspace/scripts/run.py`）。框架会根据当前文件系统模式自动为每个 skill 生成正确的 `<files-root>` 绝对路径前缀，agent 在 shell 执行时会用 `<files-root>` 拼出完整路径。硬编码绝对路径会导致 skill 只能在特定文件系统模式下工作。
+
 **通用能力放市场，项目特有的写工作区。** 代码评审、表格分析这种放团队 Git 上集中维护；公司内部 RPC 规范、本项目的命名约定写到 `workspace/skills/` 里跟着代码版本走。
 
 **用户目录用来"覆盖+补充"，不要拿来当主存放。** 关键能力请放在所有用户都能看到的层。
@@ -27417,7 +27442,7 @@ GET /v1/admin/sessions/{sessionId}/tasks
 ```java
 agent.streamEvents(message)
     .filter(e -> e.getType() == AgentEventType.TOOL_RESULT_END)
-    .filter(e -> "todo_write".equals(((ToolResultEndEvent) e).getToolName()))
+    .filter(e -> "todo_write".equals(((ToolResultEndEvent) e).getToolCallName()))
     .doOnNext(e -> {
         // 从 state 中读取最新任务列表
         var tasks = agent.getAgentState(userId, sessionId)
@@ -27991,6 +28016,31 @@ description: "AgentScope Java 各版本变更记录"
 ---
 
 本页记录 AgentScope Java 2.0 各版本的具体变更。从 1.x 升级的整体迁移指南请见 [V1 迁移指南](../change-log.md)。
+
+---
+
+## 2.0.0-RC3
+
+> 发布日期：2026-06-11
+
+### 新增
+
+- **`AgentResultEvent`** —— 新增事件类型，在 agent 调用完成后、`AgentEndEvent` 之前发出，携带最终 `Msg` 结果。`streamEvents()` 的消费方可直接从事件流中获取最终结果，无需额外订阅 `Mono<Msg>` 返回值
+- **`CustomEvent`** —— 通用可扩展事件，用于中间件向前端推送应用级通知（状态变更、团队变更等），无需为每种业务场景新增 `AgentEventType`。内置 well-known name：`state_updated`、`team_updated`
+- **`HintBlockEvent`** —— 一次性 hint block 事件，用于传递团队消息、后台工具结果、用户中断等完整内容，区别于需要流式拼接的 text/thinking block
+- **`WorkspacePathNormalizer`** —— 文件路径归一化工具，将绝对路径转换为 workspace 相对路径。根据当前文件系统模式（本地 / 沙箱）注册前缀，避免跨模式误匹配
+- **工具事件携带 `toolCallName`** —— `ToolCallDeltaEvent`、`ToolCallEndEvent`、`ToolResultDataDeltaEvent`、`ToolResultEndEvent`、`ToolResultTextDeltaEvent` 均新增 `toolCallName` 字段，消费端不再需要缓存 start 事件的名称映射
+
+### 变更
+
+- **`call()` 与 `streamEvents()` 共享执行核心** —— 新增内部 `buildAgentStream` 方法作为 `call()` 和 `streamEvents()` 的统一实现，确保 `onAgent` middleware 链在所有调用路径上一致触发。`call()` 从事件流中提取 `AgentResultEvent` 获得结果，移除了旧的独立 `agentImpl` 逻辑
+- **分布式部署下 session 状态始终从 store 加载** —— `activateSlotForContext` 在配置了 `AgentStateStore` 时，每次调用开头从 store 重新加载状态和权限引擎，避免分布式环境中同一 sessionId 漂移到不同机器时读到过期本地缓存
+- **`ToolResultEvictionMiddleware` 时机修正** —— 从 `onActing`（此时状态尚未写入，导致空操作）迁移到 `onReasoning`，确保工具结果已持久化后再执行淘汰
+- **`LocalFilesystem` 路径解析简化** —— 重构路径解析逻辑，减少冗余代码
+
+### 修复
+
+- 修复 `RuntimeContext` 在测试中未设置 `userId` 导致用户隔离不准确的问题
 
 ---
 
